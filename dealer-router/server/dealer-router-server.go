@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/pebbe/zmq4"
@@ -20,44 +21,25 @@ func NewServerTask(numServer int) *ServerTask {
 func (s *ServerTask) Run(wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	context, err := zmq4.NewContext()
-	if err != nil {
-		log.Fatalf("Failed to create context: %v", err)
-	}
+	context, _ := zmq4.NewContext()
 	defer context.Term()
 
-	frontend, err := context.NewSocket(zmq4.ROUTER)
-	if err != nil {
-		log.Fatalf("Failed to create frontend socket: %v", err)
-	}
+	frontend, _ := context.NewSocket(zmq4.ROUTER)
 	defer frontend.Close()
-	err = frontend.Bind("tcp://*:5570")
-	if err != nil {
-		log.Fatalf("Failed to bind frontend socket: %v", err)
-	}
+	frontend.Bind("tcp://*:5570")
 
-	backend, err := context.NewSocket(zmq4.DEALER)
-	if err != nil {
-		log.Fatalf("Failed to create backend socket: %v", err)
-	}
+	backend, _ := context.NewSocket(zmq4.DEALER)
 	defer backend.Close()
-	err = backend.Bind("inproc://backend")
-	if err != nil {
-		log.Fatalf("Failed to bind backend socket: %v", err)
-	}
+	backend.Bind("inproc://backend")
 
-	var workers []*ServerWorker
+	var workerWG sync.WaitGroup
 	for i := 0; i < s.numServer; i++ {
 		worker := NewServerWorker(context, i)
-		workers = append(workers, worker)
-		wg.Add(1)
-		go worker.Run(wg)
+		workerWG.Add(1)
+		go worker.Run(&workerWG)
 	}
 
-	err = zmq4.Proxy(frontend, backend, nil)
-	if err != nil {
-		log.Fatalf("Failed to start proxy: %v", err)
-	}
+	zmq4.Proxy(frontend, backend, nil)
 }
 
 type ServerWorker struct {
@@ -72,27 +54,16 @@ func NewServerWorker(context *zmq4.Context, id int) *ServerWorker {
 func (w *ServerWorker) Run(wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	worker, err := w.context.NewSocket(zmq4.DEALER)
-	if err != nil {
-		log.Fatalf("Worker#%d: Failed to create DEALER socket: %v", w.id, err)
-	}
+	worker, _ := w.context.NewSocket(zmq4.DEALER)
 	defer worker.Close()
-	err = worker.Connect("inproc://backend")
-	if err != nil {
-		log.Fatalf("Worker#%d: Failed to connect to backend: %v", w.id, err)
-	}
+	worker.Connect("inproc://backend")
 	fmt.Printf("Worker#%d started\n", w.id)
 
 	for {
-		msg, err := worker.RecvMessage(0)
-		if err != nil {
-			log.Fatalf("Worker#%d: Failed to receive message: %v", w.id, err)
-		}
-		fmt.Printf("Worker#%d received %s from %s\n", w.id, msg[1], msg[0])
-		_, err = worker.SendMessage(msg[0], msg[1])
-		if err != nil {
-			log.Fatalf("Worker#%d: Failed to send message: %v", w.id, err)
-		}
+		ident, _ := worker.RecvMessage(0)
+		msg := ident[1]
+		fmt.Printf("Worker#%d received %s from %s\n", w.id, msg, ident[0])
+		worker.SendMessage(ident)
 	}
 }
 
@@ -100,7 +71,7 @@ func main() {
 	if len(os.Args) < 2 {
 		log.Fatalf("Usage: %s <num_server>", os.Args[0])
 	}
-	numServer := os.Args[1]
+	numServer, _ := strconv.Atoi(os.Args[1])
 
 	var wg sync.WaitGroup
 	server := NewServerTask(numServer)
